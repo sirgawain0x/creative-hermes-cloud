@@ -29,7 +29,10 @@ for BASE_DIR in "${PERSIST_DIR}" "${RUNTIME_DIR}"; do
     "${BASE_DIR}/workspace" \
     "${BASE_DIR}/home" \
     "${BASE_DIR}/pairing" \
-    "${BASE_DIR}/platforms/pairing"
+    "${BASE_DIR}/platforms/pairing" \
+    "${BASE_DIR}/webapp"
+
+  chmod 700 "${BASE_DIR}/webapp"
 
   for PROFILE in dev-builder qa-researcher; do
     mkdir -p \
@@ -98,6 +101,7 @@ ROOT_TREES = (
     "pairing",
     "platforms",
     "profiles",
+    "webapp",
 )
 
 
@@ -139,6 +143,15 @@ for tree in ROOT_TREES:
                     copy_file(src, dst)
             except OSError as exc:
                 print(f"[start_hermes] Warning: failed to restore {rel_dir / fname}: {exc}", flush=True)
+
+webapp_dir = runtime_dir / "webapp"
+if webapp_dir.exists():
+    try:
+        os.chmod(webapp_dir, 0o700)
+        for p in webapp_dir.rglob("*"):
+            os.chmod(p, 0o700 if p.is_dir() else 0o600)
+    except OSError as exc:
+        print(f"[start_hermes] Warning: could not tighten webapp permissions: {exc}", flush=True)
 
 # Validate every restored .db file; quarantine/delete corrupted DBs in both runtime and persist dirs.
 for db_path in list(runtime_dir.rglob("*.db")):
@@ -196,6 +209,8 @@ else:
         data["platforms"] = default_data["platforms"]
     elif isinstance(data.get("platforms"), dict) and "api_server" not in data["platforms"]:
         data["platforms"]["api_server"] = default_data["platforms"]["api_server"]
+    if "webapp" in default_data:
+        data["webapp"] = default_data["webapp"]
     with main_cfg_path.open("w", encoding="utf-8") as fh:
         yaml.dump(data, fh)
 
@@ -502,12 +517,12 @@ SYNC_PID=$!
 
 cleanup() {
   echo "[start_hermes] Shutting down..." >&2
-  for pid in "${PROXY_PID:-}" "${DASH_PID:-}" "${HERMES_PID:-}"; do
+  for pid in "${PROXY_PID:-}" "${HERMES_PID:-}"; do
     if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
       kill -TERM "${pid}" 2>/dev/null || true
     fi
   done
-  for pid in "${PROXY_PID:-}" "${DASH_PID:-}" "${HERMES_PID:-}"; do
+  for pid in "${PROXY_PID:-}" "${HERMES_PID:-}"; do
     if [ -n "${pid}" ]; then
       wait "${pid}" 2>/dev/null || true
     fi
@@ -521,13 +536,9 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
-# Start the multiplexed Hermes Gateway (serves OpenAI-compatible API Server on 8000)
+# Start the multiplexed Hermes Gateway (serves OpenAI API on 8000 + browser-hosted Hermes Desktop Webapp on 9120)
 hermes gateway run &
 HERMES_PID=$!
-
-# Start the Hermes Web Dashboard / Remote Desktop Backend (serves port 9119)
-hermes dashboard --host 0.0.0.0 --port 9119 --no-open --skip-build &
-DASH_PID=$!
 
 # Start async aiohttp reverse proxy on $PORT (8080) supporting SSE streaming, WebSockets, and multi-value headers
 "${VENV_PY}" - <<'PY' &
@@ -539,7 +550,7 @@ from multidict import CIMultiDict
 
 PORT = int(os.environ.get("PORT", "8080"))
 API_ORIGIN = "http://127.0.0.1:8000"
-DASH_ORIGIN = "http://127.0.0.1:9119"
+DASH_ORIGIN = "http://127.0.0.1:9120"
 HOP_BY_HOP = {
     "connection",
     "keep-alive",
@@ -713,11 +724,11 @@ PROXY_PID=$!
   for _ in $(seq 1 180); do
     if "${VENV_PY}" -c '
 import socket
-for port in (8000, 9119):
+for port in (8000, 9120):
     with socket.create_connection(("127.0.0.1", port), timeout=1):
         pass
 ' 2>/dev/null; then
-      echo "[start_hermes] Ports 8000 and 9119 are listening; running hermes doctor..."
+      echo "[start_hermes] Ports 8000 and 9120 are listening; running hermes doctor..."
       hermes doctor || true
       break
     fi
@@ -725,7 +736,7 @@ for port in (8000, 9119):
   done
 ) &
 
-wait -n "${HERMES_PID}" "${DASH_PID}" "${PROXY_PID}"
+wait -n "${HERMES_PID}" "${PROXY_PID}"
 EXIT_CODE=$?
 cleanup
 exit "${EXIT_CODE}"

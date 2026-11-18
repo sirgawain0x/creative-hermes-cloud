@@ -21,6 +21,6 @@ RUN chmod +x /app/start_hermes.sh && \
 
 # Cloud Run routes external HTTP traffic to $PORT (default 8080)
 ENV PORT=8080
-EXPOSE 8080 8000 9119
+EXPOSE 8080 8000 9120
 
 ENTRYPOINT ["/app/start_hermes.sh"]

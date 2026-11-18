@@ -40,6 +40,12 @@ dashboard:
   host: "0.0.0.0"
   port: 9119
 
+# Browser-Hosted Hermes Desktop Workspace ("Webapp" — Port 9120)
+webapp:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9120
+
 # OpenAI-Compatible API Server for Your Apps & Omi/A2A Tools (Port 8000)
 api_server:
   enabled: true
