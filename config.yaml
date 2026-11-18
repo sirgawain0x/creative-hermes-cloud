@@ -1,0 +1,75 @@
+_config_version: 53
+
+# Primary Orchestrator: NVIDIA Nemotron 3 Ultra on Ollama Cloud ($0.10/M input)
+model:
+  default: "nemotron-3-ultra"
+  provider: "custom"
+  base_url: "https://ollama.com/v1"
+  api_key_env: "OLLAMA_API_KEY"
+
+# Parallel Sub-Agents & Background Delegation: MiniMax M3.1 Flash ($0.15/M input, $0.015 cached)
+delegation:
+  model: "minimax-m3.1-flash"
+  provider: "custom"
+  base_url: "https://ollama.com/v1"
+  api_key_env: "OLLAMA_API_KEY"
+
+# Google Vertex AI / Enterprise AI (Authenticates via Cloud Run Service Account ADC)
+vertex:
+  project_id: "${GCP_PROJECT_ID}"
+  region: "global"
+
+# Automatic Multimodal / Vision / Video Fallback -> Google Vertex AI (Uses GCP Credits)
+fallback_providers:
+  - provider: "vertex"
+    model: "google/gemini-3-flash-preview"
+    on_capabilities: ["vision", "video", "audio"]
+
+auxiliary:
+  vision:
+    provider: "vertex"
+    model: "google/gemini-3-flash-preview"
+
+# Single Multiplexed Gateway Serving All Bot Profiles
+gateway:
+  multiplex_profiles: true
+
+# Web Dashboard (Port 9119)
+dashboard:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9119
+
+# OpenAI-Compatible API Server for Your Apps & Omi/A2A Tools (Port 8000)
+api_server:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8000
+
+platforms:
+  api_server:
+    enabled: true
+    extra:
+      host: "0.0.0.0"
+      port: 8000
+      model_routes:
+        hermes-agent:
+          model: "nemotron-3-ultra"
+          provider: "custom"
+          base_url: "https://ollama.com/v1"
+        dev-builder:
+          model: "glm-5.3-flash"
+          provider: "custom"
+          base_url: "https://ollama.com/v1"
+        qa-researcher:
+          model: "minimax-m3.1-flash"
+          provider: "custom"
+          base_url: "https://ollama.com/v1"
+
+# Required for SQLite stability on Google Cloud Storage FUSE mounts
+database:
+  journal_mode: "delete"
+  auto_prune: false
+
+sessions:
+  auto_prune: false
