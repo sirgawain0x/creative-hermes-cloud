@@ -30,6 +30,33 @@ auxiliary:
     provider: "vertex"
     model: "google/gemini-3-flash-preview"
 
+# Speech-to-Text (STT): Free local Faster-Whisper on CPU (int8) with 5-min idle RAM unload
+stt:
+  enabled: true
+  provider: "local"
+  local:
+    model: "base"
+    device: "cpu"
+    compute_type: "int8"
+    vad: true
+    unload_after_idle_seconds: 300
+
+# Text-to-Speech (TTS): Google Gemini 3.8 Flash-Lite TTS (configure GEMINI_API_KEY in Hermes Settings -> Providers -> API Keys)
+tts:
+  provider: "gemini"
+  gemini:
+    model: "gemini-3.8-flash-lite-tts"
+    voice: "Kore"
+    audio_tags: false
+
+# Voice Chat & Webapp Relay Settings
+voice:
+  voice_chat_mode: "chained"
+  auto_tts: false
+  auto_tts_mode: "voice_only"
+  client_direct: false
+  barge_in: true
+
 # Single Multiplexed Gateway Serving All Bot Profiles
 gateway:
   multiplex_profiles: true
@@ -63,6 +90,13 @@ platforms:
           model: "nemotron-3-ultra"
           provider: "custom"
           base_url: "https://ollama.com/v1"
+        mixtape-agent:
+          model: "minimax-m3.1-flash"
+          provider: "custom"
+          base_url: "https://ollama.com/v1"
+        creative-tv:
+          model: "google/gemini-3-flash-preview"
+          provider: "vertex"
         dev-builder:
           model: "glm-5.3-flash"
           provider: "custom"

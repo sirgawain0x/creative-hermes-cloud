@@ -10,6 +10,7 @@ export HERMES_WRITE_SAFE_ROOT="/var/lib/hermes:/opt/data"
 export HERMES_DOCKER_EXEC_AS_ROOT=1
 export HERMES_ALLOW_ROOT_GATEWAY=1
 export HERMES_GATEWAY_LOCK_DIR="/tmp/hermes-locks"
+export HF_HOME="/opt/hermes/hf-cache"
 export HOME="/root"
 
 mkdir -p /tmp/hermes-locks
@@ -34,7 +35,7 @@ for BASE_DIR in "${PERSIST_DIR}" "${RUNTIME_DIR}"; do
 
   chmod 700 "${BASE_DIR}/webapp"
 
-  for PROFILE in dev-builder qa-researcher; do
+  for PROFILE in mixtape-agent creative-tv dev-builder qa-researcher; do
     mkdir -p \
       "${BASE_DIR}/profiles/${PROFILE}/memories" \
       "${BASE_DIR}/profiles/${PROFILE}/sessions" \
@@ -192,6 +193,34 @@ project_id = os.environ.get("GCP_PROJECT_ID", "").strip()
 yaml = YAML()
 yaml.preserve_quotes = True
 
+def migrate_tts_to_gemini(cfg: dict) -> bool:
+    tts_cfg = cfg.get("tts")
+    if not isinstance(tts_cfg, dict):
+        return False
+    updated = False
+    if not tts_cfg.get("provider") or tts_cfg.get("provider") in ("edge", "piper"):
+        tts_cfg["provider"] = "gemini"
+        updated = True
+    gemini_cfg = tts_cfg.get("gemini")
+    if not isinstance(gemini_cfg, dict):
+        gemini_cfg = {}
+        tts_cfg["gemini"] = gemini_cfg
+        updated = True
+    if not gemini_cfg.get("model") or gemini_cfg.get("model") == "gemini-2.5-flash-preview-tts":
+        gemini_cfg["model"] = "gemini-3.8-flash-lite-tts"
+        updated = True
+    if not gemini_cfg.get("voice"):
+        gemini_cfg["voice"] = "Kore"
+        updated = True
+    if "audio_tags" not in gemini_cfg:
+        gemini_cfg["audio_tags"] = False
+        updated = True
+    if "piper" in tts_cfg:
+        tts_cfg.pop("piper", None)
+        updated = True
+    return updated
+
+
 main_cfg_path = runtime_dir / "config.yaml"
 if not main_cfg_path.exists():
     raw = Path("/app/default_config.yaml").read_text(encoding="utf-8")
@@ -207,40 +236,118 @@ else:
         vertex.setdefault("region", "global")
     if "platforms" not in data and "platforms" in default_data:
         data["platforms"] = default_data["platforms"]
-    elif isinstance(data.get("platforms"), dict) and "api_server" not in data["platforms"]:
-        data["platforms"]["api_server"] = default_data["platforms"]["api_server"]
+    elif isinstance(data.get("platforms"), dict):
+        if "api_server" not in data["platforms"] and "api_server" in (default_data.get("platforms") or {}):
+            data["platforms"]["api_server"] = default_data["platforms"]["api_server"]
+        else:
+            api_srv = data["platforms"].setdefault("api_server", {})
+            api_extra = api_srv.setdefault("extra", {})
+            routes = api_extra.setdefault("model_routes", {})
+            default_routes = (
+                (default_data.get("platforms") or {})
+                .get("api_server", {})
+                .get("extra", {})
+                .get("model_routes", {})
+            )
+            for alias, route_cfg in default_routes.items():
+                if alias not in routes:
+                    routes[alias] = route_cfg
     if "webapp" in default_data:
         data["webapp"] = default_data["webapp"]
+    for section_key in ("stt", "tts", "voice"):
+        if section_key in default_data:
+            if section_key not in data or not isinstance(data.get(section_key), dict):
+                data[section_key] = default_data[section_key]
+    migrate_tts_to_gemini(data)
+    if "stt" in default_data and isinstance(data.get("stt"), dict):
+        data["stt"].setdefault("enabled", True)
+        data["stt"].setdefault("provider", "local")
+        local_cfg = data["stt"].setdefault("local", {})
+        local_cfg.setdefault("model", "base")
+        local_cfg.setdefault("device", "cpu")
+        local_cfg.setdefault("compute_type", "int8")
+        local_cfg.setdefault("vad", True)
+        local_cfg.setdefault("unload_after_idle_seconds", 300)
+    if "voice" in default_data and isinstance(data.get("voice"), dict):
+        data["voice"]["client_direct"] = False
     with main_cfg_path.open("w", encoding="utf-8") as fh:
         yaml.dump(data, fh)
 
 profiles = {
-    "dev-builder": "glm-5.3-flash",
-    "qa-researcher": "minimax-m3.1-flash",
+    "mixtape-agent": {
+        "model": {
+            "default": "minimax-m3.1-flash",
+            "provider": "custom",
+            "base_url": "https://ollama.com/v1",
+            "api_key_env": "OLLAMA_API_KEY",
+        },
+        "fallback_providers": [
+            {
+                "provider": "vertex",
+                "model": "google/gemini-3-flash-preview",
+                "on_capabilities": ["vision", "video", "audio"],
+            }
+        ],
+    },
+    "creative-tv": {
+        "model": {
+            "default": "google/gemini-3-flash-preview",
+            "provider": "vertex",
+        },
+        "fallback_providers": [
+            {
+                "provider": "custom",
+                "model": "minimax-m3.1-flash",
+                "base_url": "https://ollama.com/v1",
+                "api_key_env": "OLLAMA_API_KEY",
+            }
+        ],
+    },
+    "dev-builder": {
+        "model": {
+            "default": "glm-5.3-flash",
+            "provider": "custom",
+            "base_url": "https://ollama.com/v1",
+            "api_key_env": "OLLAMA_API_KEY",
+        },
+        "fallback_providers": [
+            {
+                "provider": "vertex",
+                "model": "google/gemini-3-flash-preview",
+                "on_capabilities": ["vision", "video", "audio"],
+            }
+        ],
+    },
+    "qa-researcher": {
+        "model": {
+            "default": "minimax-m3.1-flash",
+            "provider": "custom",
+            "base_url": "https://ollama.com/v1",
+            "api_key_env": "OLLAMA_API_KEY",
+        },
+        "fallback_providers": [
+            {
+                "provider": "vertex",
+                "model": "google/gemini-3-flash-preview",
+                "on_capabilities": ["vision", "video", "audio"],
+            }
+        ],
+    },
 }
 
-for profile_name, model_name in profiles.items():
+default_data_for_profiles = yaml.load(Path("/app/default_config.yaml").read_text(encoding="utf-8")) or {}
+
+for profile_name, spec in profiles.items():
     cfg_path = runtime_dir / "profiles" / profile_name / "config.yaml"
     if not cfg_path.exists():
         cfg = {
             "_config_version": 53,
-            "model": {
-                "default": model_name,
-                "provider": "custom",
-                "base_url": "https://ollama.com/v1",
-                "api_key_env": "OLLAMA_API_KEY",
-            },
+            "model": spec["model"],
             "vertex": {
                 "project_id": project_id,
                 "region": "global",
             },
-            "fallback_providers": [
-                {
-                    "provider": "vertex",
-                    "model": "google/gemini-3-flash-preview",
-                    "on_capabilities": ["vision", "video", "audio"],
-                }
-            ],
+            "fallback_providers": spec["fallback_providers"],
             "auxiliary": {
                 "vision": {
                     "provider": "vertex",
@@ -255,8 +362,55 @@ for profile_name, model_name in profiles.items():
                 "auto_prune": False,
             },
         }
+        for section_key in ("stt", "tts", "voice"):
+            if section_key in default_data_for_profiles:
+                cfg[section_key] = default_data_for_profiles[section_key]
         with cfg_path.open("w", encoding="utf-8") as fh:
             yaml.dump(cfg, fh)
+    else:
+        prof_data = yaml.load(cfg_path.read_text(encoding="utf-8")) or {}
+        changed = False
+        for section_key in ("stt", "tts", "voice"):
+            if section_key in default_data_for_profiles and (
+                section_key not in prof_data or not isinstance(prof_data.get(section_key), dict)
+            ):
+                prof_data[section_key] = default_data_for_profiles[section_key]
+                changed = True
+        if migrate_tts_to_gemini(prof_data):
+            changed = True
+        if changed:
+            with cfg_path.open("w", encoding="utf-8") as fh:
+                yaml.dump(prof_data, fh)
+
+# Seed SOUL.md for root (default) and sub-profiles if missing, and refresh Lens Grove skill
+import shutil
+
+soul_targets = [
+    (Path("/app/profiles/default/SOUL.md"), runtime_dir / "SOUL.md"),
+    *[
+        (Path(f"/app/profiles/{name}/SOUL.md"), runtime_dir / "profiles" / name / "SOUL.md")
+        for name in profiles
+    ],
+]
+for src_soul, dst_soul in soul_targets:
+    if src_soul.is_file() and not dst_soul.exists():
+        dst_soul.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src_soul, dst_soul)
+
+grove_skill_src = Path("/app/skills/lens-grove-uploader/SKILL.md")
+if grove_skill_src.is_file():
+    for skill_dst in (
+        runtime_dir / "skills" / "lens-grove-uploader" / "SKILL.md",
+        runtime_dir / "profiles" / "mixtape-agent" / "skills" / "lens-grove-uploader" / "SKILL.md",
+    ):
+        skill_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(grove_skill_src, skill_dst)
+
+adk_skill_src = Path("/app/skills/creative-adk-peers/SKILL.md")
+if adk_skill_src.is_file():
+    adk_skill_dst = runtime_dir / "skills" / "creative-adk-peers" / "SKILL.md"
+    adk_skill_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(adk_skill_src, adk_skill_dst)
 PY
 
 # Derive deterministic dashboard HMAC secret so sessions survive restarts
@@ -294,8 +448,11 @@ import os
 from pathlib import Path
 
 runtime_dir = Path("/var/lib/hermes/.hermes")
+root_env = runtime_dir / ".env"
 env_paths = [
-    runtime_dir / ".env",
+    root_env,
+    runtime_dir / "profiles" / "mixtape-agent" / ".env",
+    runtime_dir / "profiles" / "creative-tv" / ".env",
     runtime_dir / "profiles" / "dev-builder" / ".env",
     runtime_dir / "profiles" / "qa-researcher" / ".env",
 ]
@@ -311,28 +468,76 @@ managed_keys = [
     ("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")),
     ("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "")),
     ("HERMES_DASHBOARD_BASIC_AUTH_SECRET", os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_SECRET", "")),
+    ("MIXTAPE_GROVE_SIGNER_KEY", os.environ.get("MIXTAPE_GROVE_SIGNER_KEY", "")),
+    ("PIXELS_ADK_URL", os.environ.get("PIXELS_ADK_URL", "")),
+    ("DEAR_CREATIVE_ADK_URL", os.environ.get("DEAR_CREATIVE_ADK_URL", "")),
 ]
-managed_names = {k for k, _ in managed_keys}
+root_only_keys = [
+    ("TELEGRAM_BOT_TOKEN", os.environ.get("TELEGRAM_BOT_TOKEN", "")),
+    ("DISCORD_BOT_TOKEN", os.environ.get("DISCORD_BOT_TOKEN", "")),
+]
+managed_names = {k for k, _ in managed_keys} | {k for k, _ in root_only_keys}
+
+def _read_dotenv_key(path: Path, keys: tuple[str, ...]) -> str:
+    if not path.is_file():
+        return ""
+    found: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        k, v = stripped.split("=", 1)
+        k = k.strip()
+        if k in keys:
+            val = v.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+                val = val[1:-1]
+            if val:
+                found[k] = val
+    for k in keys:
+        if found.get(k):
+            return found[k]
+    return ""
+
+
+env_gemini_key = (os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")).strip()
+root_saved_gemini_key = _read_dotenv_key(root_env, ("GEMINI_API_KEY", "GOOGLE_API_KEY"))
+shared_gemini_key = env_gemini_key or root_saved_gemini_key
 
 for env_path in env_paths:
+    has_gemini_in_existing = False
     existing_lines = []
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped == "# OPENAI_BASE_URL=https://ollama.com/v1":
                 continue
-            key_part = stripped.split("=", 1)[0] if "=" in stripped and not stripped.startswith("#") else None
+            key_part = stripped.split("=", 1)[0].strip() if "=" in stripped and not stripped.startswith("#") else None
             if key_part in managed_names:
                 continue
+            if env_gemini_key and key_part == "GEMINI_API_KEY":
+                continue
+            if key_part in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+                val_part = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                if val_part:
+                    has_gemini_in_existing = True
             existing_lines.append(line)
 
     out_lines = list(existing_lines)
     # Satisfy hermes doctor's _has_provider_env_config hint without polluting OPENAI_BASE_URL
     out_lines.append("# OPENAI_BASE_URL=https://ollama.com/v1")
-    for k, v in managed_keys:
+    keys_for_path = list(managed_keys)
+    if env_path == root_env:
+        keys_for_path.extend(root_only_keys)
+    for k, v in keys_for_path:
         if v:
             out_lines.append(f"{k}={v}")
+    if env_gemini_key:
+        out_lines.append(f"GEMINI_API_KEY={env_gemini_key}")
+    elif shared_gemini_key and env_path != root_env and not has_gemini_in_existing:
+        out_lines.append(f"GEMINI_API_KEY={shared_gemini_key}")
 
+    env_path.parent.mkdir(parents=True, exist_ok=True)
     env_path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
     os.chmod(env_path, 0o600)
 PY
@@ -372,6 +577,8 @@ from pathlib import Path
 
 RUNTIME_DIR = Path("/var/lib/hermes/.hermes")
 PERSIST_DIR = Path("/opt/data/.hermes")
+PROFILE_NAMES = ("mixtape-agent", "creative-tv", "dev-builder", "qa-researcher")
+_GEMINI_KEYS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 SKIP_DIRS = {"cache", "logs", "tmp", ".git", "__pycache__", "state", "runtime"}
 SKIP_EXACT = {
@@ -439,9 +646,77 @@ def sync_db(src: Path, dst: Path) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
-def sync_once(last_synced: dict[str, tuple[int, int]] | None = None) -> None:
+def _read_dotenv_map(path: Path) -> tuple[list[str], dict[str, str]]:
+    if not path.is_file():
+        return [], {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    values: dict[str, str] = {}
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        k, v = stripped.split("=", 1)
+        k = k.strip()
+        if k in _GEMINI_KEYS:
+            val = v.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+                val = val[1:-1]
+            if val:
+                values[k] = val
+    return lines, values
+
+
+def mirror_root_gemini_key(state: dict[str, str]) -> None:
+    _, root_vals = _read_dotenv_map(RUNTIME_DIR / ".env")
+    root_key = root_vals.get("GEMINI_API_KEY") or root_vals.get("GOOGLE_API_KEY") or ""
+    if not root_key:
+        return
+    last_mirrored = state.get("last_mirrored", "")
+    for profile in PROFILE_NAMES:
+        p_env = RUNTIME_DIR / "profiles" / profile / ".env"
+        try:
+            old_text = p_env.read_text(encoding="utf-8") if p_env.is_file() else ""
+        except OSError:
+            continue
+        lines, prof_vals = _read_dotenv_map(p_env)
+        cur_gemini = prof_vals.get("GEMINI_API_KEY", "")
+        cur_google = prof_vals.get("GOOGLE_API_KEY", "")
+        should_update = (not cur_gemini and not cur_google) or (bool(last_mirrored) and cur_gemini == last_mirrored)
+        if not should_update:
+            continue
+        new_lines: list[str] = []
+        replaced = False
+        for line in lines:
+            stripped = line.strip()
+            key_part = stripped.split("=", 1)[0].strip() if "=" in stripped and not stripped.startswith("#") else None
+            if key_part == "GEMINI_API_KEY":
+                if not replaced:
+                    new_lines.append(f"GEMINI_API_KEY={root_key}")
+                    replaced = True
+                continue
+            new_lines.append(line)
+        if not replaced:
+            new_lines.append(f"GEMINI_API_KEY={root_key}")
+        new_text = "\n".join(new_lines) + "\n"
+        if new_text != old_text:
+            try:
+                p_env.parent.mkdir(parents=True, exist_ok=True)
+                p_env.write_text(new_text, encoding="utf-8")
+                os.chmod(p_env, 0o600)
+            except OSError as exc:
+                print(f"[gcs_sync] Warning mirroring GEMINI_API_KEY to {profile}: {exc}", file=sys.stderr, flush=True)
+    state["last_mirrored"] = root_key
+
+
+def sync_once(
+    last_synced: dict[str, tuple[int, int]] | None = None,
+    mirror_state: dict[str, str] | None = None,
+) -> None:
     if not RUNTIME_DIR.exists():
         return
+    if mirror_state is None:
+        mirror_state = {}
+    mirror_root_gemini_key(mirror_state)
     for dirpath, dirnames, filenames in os.walk(RUNTIME_DIR):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         rel_dir = Path(dirpath).relative_to(RUNTIME_DIR)
@@ -497,9 +772,10 @@ def main() -> None:
         return
 
     last_synced: dict[str, tuple[int, int]] = {}
+    mirror_state: dict[str, str] = {}
     interval = max(2, args.daemon)
     while not _STOP:
-        sync_once(last_synced)
+        sync_once(last_synced, mirror_state)
         for _ in range(interval):
             if _STOP:
                 break
@@ -517,12 +793,12 @@ SYNC_PID=$!
 
 cleanup() {
   echo "[start_hermes] Shutting down..." >&2
-  for pid in "${PROXY_PID:-}" "${HERMES_PID:-}"; do
+  for pid in "${PROXY_PID:-}" "${VOICE_PID:-}" "${HERMES_PID:-}"; do
     if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
       kill -TERM "${pid}" 2>/dev/null || true
     fi
   done
-  for pid in "${PROXY_PID:-}" "${HERMES_PID:-}"; do
+  for pid in "${PROXY_PID:-}" "${VOICE_PID:-}" "${HERMES_PID:-}"; do
     if [ -n "${pid}" ]; then
       wait "${pid}" 2>/dev/null || true
     fi
@@ -540,6 +816,10 @@ trap cleanup SIGTERM SIGINT
 hermes gateway run &
 HERMES_PID=$!
 
+# Start the bilingual Voice Bridge (Faster-Whisper STT + wake-word gate + Google Gemini TTS on 8001)
+"${VENV_PY}" /app/voice_bridge.py &
+VOICE_PID=$!
+
 # Start async aiohttp reverse proxy on $PORT (8080) supporting SSE streaming, WebSockets, and multi-value headers
 "${VENV_PY}" - <<'PY' &
 import asyncio
@@ -550,6 +830,7 @@ from multidict import CIMultiDict
 
 PORT = int(os.environ.get("PORT", "8080"))
 API_ORIGIN = "http://127.0.0.1:8000"
+VOICE_ORIGIN = "http://127.0.0.1:8001"
 DASH_ORIGIN = "http://127.0.0.1:9120"
 HOP_BY_HOP = {
     "connection",
@@ -564,6 +845,8 @@ HOP_BY_HOP = {
 
 
 def pick_upstream(path: str) -> str:
+    if path == "/v1/voice" or path.startswith("/v1/voice/"):
+        return VOICE_ORIGIN
     if (
         path == "/v1"
         or path.startswith("/v1/")
@@ -724,11 +1007,11 @@ PROXY_PID=$!
   for _ in $(seq 1 180); do
     if "${VENV_PY}" -c '
 import socket
-for port in (8000, 9120):
+for port in (8000, 8001, 9120):
     with socket.create_connection(("127.0.0.1", port), timeout=1):
         pass
 ' 2>/dev/null; then
-      echo "[start_hermes] Ports 8000 and 9120 are listening; running hermes doctor..."
+      echo "[start_hermes] Ports 8000, 8001, and 9120 are listening; running hermes doctor..."
       hermes doctor || true
       break
     fi
@@ -736,7 +1019,7 @@ for port in (8000, 9120):
   done
 ) &
 
-wait -n "${HERMES_PID}" "${PROXY_PID}"
+wait -n "${HERMES_PID}" "${VOICE_PID}" "${PROXY_PID}"
 EXIT_CODE=$?
 cleanup
 exit "${EXIT_CODE}"

@@ -1,0 +1,10 @@
+{
+  "name": "hermes-lens-grove-cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@lens-chain/storage-client": "1.0.6",
+    "viem": "^2.54.0"
+  }
+}

@@ -151,6 +151,46 @@ upsert_secret "OLLAMA_API_KEY" "${OLLAMA_API_KEY_VAL}"
 upsert_secret "HERMES_DASHBOARD_PASSWORD" "${HERMES_DASHBOARD_PASSWORD_VAL}"
 upsert_secret "HERMES_API_KEY" "${HERMES_API_KEY_VAL}"
 
+PIXELS_ADK_URL_VAL="${PIXELS_ADK_URL:-https://creative-director-3ortoh2aiq-ue.a.run.app}"
+DEAR_CREATIVE_ADK_URL_VAL="${DEAR_CREATIVE_ADK_URL:-https://adam-3ortoh2aiq-uk.a.run.app}"
+DEAR_CREATIVE_APP_URL_VAL="${DEAR_CREATIVE_APP_URL:-https://news.creativeplatform.xyz}"
+HERMES_GATEWAY_URL_VAL="${HERMES_GATEWAY_URL:-https://hermes-x402-gateway-3ortoh2aiq-uc.a.run.app}"
+
+grant_peer_invoker() {
+  local peer_service="$1"
+  local peer_region="$2"
+  if gcloud run services describe "${peer_service}" --project="${PROJECT_ID}" --region="${peer_region}" >/dev/null 2>&1; then
+    retry_cmd gcloud run services add-iam-policy-binding "${peer_service}" \
+      --project="${PROJECT_ID}" \
+      --region="${peer_region}" \
+      --member="serviceAccount:${SA_EMAIL}" \
+      --role="roles/run.invoker" \
+      --quiet >/dev/null
+  fi
+}
+
+grant_peer_invoker "creative-director" "us-east1"
+grant_peer_invoker "adam" "us-east4"
+
+SECRETS_ARG="OLLAMA_API_KEY=OLLAMA_API_KEY:latest,HERMES_DASHBOARD_PASSWORD=HERMES_DASHBOARD_PASSWORD:latest,HERMES_API_KEY=HERMES_API_KEY:latest"
+
+# Optional secrets: only upsert when explicitly exported in shell env (never copy local TELEGRAM_BOT_TOKEN from ~/.hermes/.env to avoid polling conflicts),
+# and bind any that already exist in Secret Manager.
+for OPTIONAL_SECRET in TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN MIXTAPE_GROVE_SIGNER_KEY GEMINI_API_KEY; do
+  OPTIONAL_VAL="${!OPTIONAL_SECRET:-}"
+  if [ -n "${OPTIONAL_VAL}" ]; then
+    upsert_secret "${OPTIONAL_SECRET}" "${OPTIONAL_VAL}"
+    SECRETS_ARG="${SECRETS_ARG},${OPTIONAL_SECRET}=${OPTIONAL_SECRET}:latest"
+  elif gcloud secrets describe "${OPTIONAL_SECRET}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    retry_cmd gcloud secrets add-iam-policy-binding "${OPTIONAL_SECRET}" \
+      --project="${PROJECT_ID}" \
+      --member="serviceAccount:${SA_EMAIL}" \
+      --role="roles/secretmanager.secretAccessor" \
+      --quiet >/dev/null
+    SECRETS_ARG="${SECRETS_ARG},${OPTIONAL_SECRET}=${OPTIONAL_SECRET}:latest"
+  fi
+done
+
 # 5. Build and Deploy to Cloud Run (min-instances=1 keeps gateway & cron alive)
 gcloud run deploy "${SERVICE_NAME}" \
   --source . \
@@ -166,8 +206,8 @@ gcloud run deploy "${SERVICE_NAME}" \
   --max-instances 1 \
   --no-cpu-throttling \
   --timeout 3600 \
-  --set-env-vars "GCP_PROJECT_ID=${PROJECT_ID},HERMES_DASHBOARD_USER=admin" \
-  --set-secrets "OLLAMA_API_KEY=OLLAMA_API_KEY:latest,HERMES_DASHBOARD_PASSWORD=HERMES_DASHBOARD_PASSWORD:latest,HERMES_API_KEY=HERMES_API_KEY:latest" \
+  --set-env-vars "GCP_PROJECT_ID=${PROJECT_ID},HERMES_DASHBOARD_USER=admin,PIXELS_ADK_URL=${PIXELS_ADK_URL_VAL},DEAR_CREATIVE_ADK_URL=${DEAR_CREATIVE_ADK_URL_VAL},DEAR_CREATIVE_APP_URL=${DEAR_CREATIVE_APP_URL_VAL},HERMES_GATEWAY_URL=${HERMES_GATEWAY_URL_VAL}" \
+  --set-secrets "${SECRETS_ARG}" \
   --add-volume "name=hermes-storage,type=cloud-storage,bucket=${BUCKET_NAME}" \
   --add-volume-mount "volume=hermes-storage,mount-path=/opt/data"
 
